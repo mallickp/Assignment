@@ -40,7 +40,25 @@ def build_dbs():
     SAMPLE USAGE
         build_dbs()
     '''
-
+    if os.path.isfile(db_path+db_file_name):
+        print( "DB Already Exist")
+        print(os.getcwd())
+        return "DB Exist"
+    else:
+        print ("Creating Database")
+        """ create a database connection to a SQLite database """
+        conn = None
+        try:
+            
+            conn = sqlite3.connect(db_path+db_file_name)
+            print("New DB Created")
+        except Error as e:
+            print(e)
+            return "Error"
+        finally:
+            if conn:
+                conn.close()
+                return "DB Created"
 ###############################################################################
 # Define function to load the csv file to the database
 ###############################################################################
@@ -69,7 +87,12 @@ def load_data_into_db():
     SAMPLE USAGE
         load_data_into_db()
     '''
-
+    cnx = sqlite3.connect(db_path+db_file_name)
+    leadscoring = load_data( [f"{data_directory}leadscoring.csv",])[0]
+    leadscoring.reset_index(drop=True)
+    leadscoring.to_sql(name='loaded_data', con=cnx, if_exists='replace')
+    cnx.close()
+    return "Writing to DataBase loaded_data Done or Data Already was in Table. Check Logs."
 
 ###############################################################################
 # Define function to map cities to their respective tiers
@@ -101,7 +124,14 @@ def map_city_tier():
         map_city_tier()
 
     '''
-
+    cnx = sqlite3.connect(db_path+db_file_name)
+    map_df = pd.read_sql('select * from loaded_data', cnx)
+    map_df["city_tier"] = map_df["city_mapped"].map(city_tier_mapping)
+    map_df["city_tier"] = map_df["city_tier"].fillna(3.0)
+    map_df.drop(columns=['city_mapped','index'],axis=1,inplace=True,errors='ignore')
+    map_df.to_sql(name='city_tier_mapped',con=cnx,if_exists='replace')
+    cnx.close()
+    return "Writing to DataBase city_tier_mapped Done or Data Already was in Table. Check Logs."
 ###############################################################################
 # Define function to map insignificant categorial variables to "others"
 ###############################################################################
@@ -138,7 +168,30 @@ def map_categorical_vars():
     SAMPLE USAGE
         map_categorical_vars()
     '''
+    cnx = sqlite3.connect(db_path+db_file_name)
+    cat_df = pd.read_sql('select * from city_tier_mapped', cnx)
+    
+    cat_df.drop(columns=['level_0','index'],axis=1,inplace=True,errors='ignore')
 
+    # all the levels below 90 percentage are assgined to a single level called others
+    new_df = cat_df[~cat_df['first_platform_c'].isin(list_platform)] 
+    new_df['first_platform_c'] = "others"
+    old_df = cat_df[cat_df['first_platform_c'].isin(list_platform)] 
+    cat_df = pd.concat([new_df, old_df])
+    
+    new_df = cat_df[~cat_df['first_utm_medium_c'].isin(list_platform)] 
+    new_df['first_utm_medium_c'] = "others"
+    old_df = cat_df[cat_df['first_utm_medium_c'].isin(list_platform)] 
+    cat_df = pd.concat([new_df, old_df])
+    
+    new_df = cat_df[~cat_df['first_utm_source_c'].isin(list_platform)] 
+    new_df['first_utm_source_c'] = "others"
+    old_df = cat_df[cat_df['first_utm_source_c'].isin(list_platform)] 
+    cat_df = pd.concat([new_df, old_df])
+
+    cat_df.to_sql(name='categorical_variables_mapped',con=cnx,if_exists='replace')
+    cnx.close()
+    return "Writing to DataBase categorical_variables_mapped Done Check Logs."
 
 ##############################################################################
 # Define function that maps interaction columns into 4 types of interactions
@@ -180,5 +233,33 @@ def interactions_mapping():
     SAMPLE USAGE
         interactions_mapping()
     '''
+    cnx = sqlite3.connect(db_path+db_file_name)
+    df = pd.read_sql('select * from categorical_variables_mapped', cnx)
     
+    df.drop(columns=['index'],axis=1,inplace=True,errors='ignore')
+    df = df.drop_duplicates()
+    
+    # read the interaction mapping file
+    df_event_mapping = load_data( [f"{interaction_mapping_file}interaction_mapping.csv",])[0]
+    
+    # unpivot the interaction columns and put the values in rows
+    df_unpivot = pd.melt(df, id_vars=index_columns, var_name='interaction_type', value_name='interaction_value')
+    
+    # handle the nulls in the interaction value column
+    df_unpivot['interaction_value'] = df_unpivot['interaction_value'].fillna(0)
+    
+    # map interaction type column with the mapping file to get interaction mapping
+    df = pd.merge(df_unpivot, df_event_mapping, on='interaction_type', how='left')
+    
+    #dropping the interaction type column as it is not needed
+    df = df.drop(['interaction_type'], axis=1)
+    
+    # pivoting the interaction mapping column values to individual columns in the dataset
+    df_pivot = df.pivot_table(values='interaction_value', index=index_columns, columns='interaction_mapping', aggfunc='sum')
+    df_pivot = df_pivot.reset_index()
+    
+    df_pivot.to_sql(name='interactions_mapped',con=cnx,if_exists='replace')
+    df_pivot.drop(columns=['index'],axis=1,inplace=True,errors='ignore')
+    cnx.close()
+    return "Writing to DataBase- interactions_mapped Done . Check Logs."
    
